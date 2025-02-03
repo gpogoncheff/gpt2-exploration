@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,7 +25,7 @@ class CasualSelfAttention(nn.Module):
         # query, key, and values for all heads in batch and move head to be in the batch
         # nh: number of heads, hs: head size, C: num_channels = nh*ns
         qkv = self.c_attn(x)
-        q, k, v =- qkv.split(self.n_embed, dim=2)
+        q, k, v = qkv.split(self.n_embed, dim=2)
         k = k.view(B, T, self.n_head, C//self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C//self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C//self.n_head).transpose(1, 2) # (B, nh, T, hs)
@@ -133,7 +134,60 @@ class GPT(nn.Module):
 
         return model
 
+    def forward(self, idx):
+        # idx: token indices of shape (B, T), batch size by seq len
+        B, T = idx.size()
+        assert T <= self.config.block_size, "sequence length exceeds block size"
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # position
+        pos_embed = self.transformer.wpe(pos) # shape (T, n_embed)
+        token_embed = self.transformer.wte(idx) # shape (B, T, n_embed)
+        x = token_embed + pos_embed
+        for block in self.transformer.h:
+            x = block(x)
+        x = self.transformer.ln_f(x) # final layer norm
+        logits = self.lm_head(x) # shape (B, T, vocab_size)
+        return logits
+
+
+
 
 if __name__ == "__main__":
-    model = GPT.from_pretrained("gpt2")
-    print("Model build and weights copied from huggingface")
+    import tiktoken
+
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.cuda.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+
+    num_return_sequences = 5
+    max_length = 30
+
+    model = GPT(GPTConfig()) # randomly initialized model
+    #model = GPT.from_pretrained("gpt2")
+    model.eval()
+    model.to(device)
+
+    enc = tiktoken.get_encoding("gpt2")
+    tokens = enc.encode("Hello, my name is gpt2. I am a language model. If you are seeing this message,")
+    tokens = torch.tensor(tokens, dtype=torch.long) # shape (num_input_tokens, )
+    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # shape (num_return_sequences, num_input_tokens)
+    x = tokens.to(device)
+
+    torch.manual_seed(13)
+    torch.cuda.manual_seed(13)
+    while x.size(1) < max_length:
+        logits = model(x) # (B, T, vocab_size)
+        logits = logits[:, -1, :] # get last predicted token (B, vocab_size)
+        probs = F.softmax(logits, dim=-1) # (B, vocab_size)
+        # top-k sampling of 50 (in accordance with hugging face)
+        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1) # (B, 50)
+        # select token from topk_probs
+        ix = torch.multinomial(topk_probs, 1) # (B, 1)
+        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
+        x = torch.cat((x, xcol), dim=1)
+
+    for i in range(num_return_sequences):
+        tokens = x[i, :max_length].tolist()
+        decoded = enc.decode(tokens)
+        print("> ", decoded)
