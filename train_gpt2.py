@@ -227,25 +227,3 @@ if __name__ == "__main__":
         loss.backward()
         optimizer.step()
         print(f"step {i}, loss: {loss.item()}")
-
-    import sys
-    sys.exit(0)
-
-
-    torch.manual_seed(13)
-    torch.cuda.manual_seed(13)
-    while x.size(1) < max_length:
-        logits = model(x) # (B, T, vocab_size)
-        logits = logits[:, -1, :] # get last predicted token (B, vocab_size)
-        probs = F.softmax(logits, dim=-1) # (B, vocab_size)
-        # top-k sampling of 50 (in accordance with hugging face)
-        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1) # (B, 50)
-        # select token from topk_probs
-        ix = torch.multinomial(topk_probs, 1) # (B, 1)
-        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
-        x = torch.cat((x, xcol), dim=1)
-
-    for i in range(num_return_sequences):
-        tokens = x[i, :max_length].tolist()
-        decoded = enc.decode(tokens)
-        print("> ", decoded)
