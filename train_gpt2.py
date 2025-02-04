@@ -13,6 +13,7 @@ class CasualSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embed, 3*config.n_embed)
         # Output projection
         self.c_proj = nn.Linear(config.n_embed, config.n_embed)
+        self.c_proj.SCALE_INIT = 1 # Flag for normalization by num residual layers
         # Regularization
         self.n_head = config.n_head
         self.n_embed = config.n_embed
@@ -46,6 +47,7 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embed, config.n_embed * 4)
         self.gelu = nn.GELU(approximate="tanh")
         self.c_proj = nn.Linear(config.n_embed * 4, config.n_embed)
+        self.c_proj.SCALE_INIT = 1
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -89,6 +91,11 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embed),
         ))
         self.lm_head = nn.Linear(config.n_embed, config.vocab_size, bias=False)
+
+        # weight sharing
+        self.transformer.wte.weight = self.lm_head.weight
+
+        self.apply(self._init_weights)
 
     @classmethod
     def from_pretrained(cls, model_type):
@@ -134,7 +141,18 @@ class GPT(nn.Module):
 
         return model
 
-    def forward(self, idx):
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, "SCALE_INIT"):
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward(self, idx, targets=None):
         # idx: token indices of shape (B, T), batch size by seq len
         B, T = idx.size()
         assert T <= self.config.block_size, "sequence length exceeds block size"
@@ -146,33 +164,73 @@ class GPT(nn.Module):
             x = block(x)
         x = self.transformer.ln_f(x) # final layer norm
         logits = self.lm_head(x) # shape (B, T, vocab_size)
-        return logits
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(
+                logits.view(-1, self.config.vocab_size), 
+                targets.view(-1)
+            )
+        return logits, loss
 
 
+import tiktoken
+class TinyShakeSpeareDataLoader():
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
 
+        data_path = "/mnt/ce39478b-8747-4c8d-8728-e6792b7bbe92/DATA/tinyshakespeare/input.txt"
+        with open(data_path, "r") as f:
+            text = f.read()
+        enc = tiktoken.get_encoding("gpt2")
+        tokens = enc.encode(text)
+        self.tokens = torch.tensor(tokens)
+        print(f"loaded {len(self.tokens)} tokens")
+        print(f"1 epoch = {len(self.tokens) // (B*T)} batches")
+
+        # state
+        self.current_position = 0
+
+    def next_batch(self):
+        B, T = self.B, self.T
+        buf = self.tokens[self.current_position:(self.current_position + B*T + 1)]
+        x = buf[:-1].view(B, T)
+        y = buf[1:].view(B, T)
+        self.current_position += B*T
+        if self.current_position + B*T + 1 > len(self.tokens):
+            self.current_position = 0
+        return x, y
 
 if __name__ == "__main__":
-    import tiktoken
-
     device = "cpu"
     if torch.cuda.is_available():
         device = "cuda"
     elif hasattr(torch.cuda.backends, "mps") and torch.backends.mps.is_available():
         device = "mps"
 
-    num_return_sequences = 5
-    max_length = 30
+    torch.manual_seed(1337)
+    torch.cuda.manual_seed(1337)
 
     model = GPT(GPTConfig()) # randomly initialized model
     #model = GPT.from_pretrained("gpt2")
-    model.eval()
     model.to(device)
 
-    enc = tiktoken.get_encoding("gpt2")
-    tokens = enc.encode("Hello, my name is gpt2. I am a language model. If you are seeing this message,")
-    tokens = torch.tensor(tokens, dtype=torch.long) # shape (num_input_tokens, )
-    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # shape (num_return_sequences, num_input_tokens)
-    x = tokens.to(device)
+    train_loader = TinyShakeSpeareDataLoader(B=4, T=32)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    for i in range(50):
+        x, y = train_loader.next_batch()
+        x = x.to(device)
+        y = y.to(device)
+        optimizer.zero_grad()
+        logits, loss = model(x, y)
+        loss.backward()
+        optimizer.step()
+        print(f"step {i}, loss: {loss.item()}")
+
+    import sys
+    sys.exit(0)
+
 
     torch.manual_seed(13)
     torch.cuda.manual_seed(13)
