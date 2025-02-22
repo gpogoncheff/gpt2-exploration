@@ -23,6 +23,7 @@ class CasualSelfAttention(nn.Module):
 
     def forward(self, x):
         B, T, C = x.size() # batch, seq len, embed dim
+        
         # query, key, and values for all heads in batch and move head to be in the batch
         # nh: number of heads, hs: head size, C: num_channels = nh*ns
         qkv = self.c_attn(x)
@@ -30,14 +31,18 @@ class CasualSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C//self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C//self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C//self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        
         # attention (T, T) matrix for all queries and keys
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float("-inf"))
-        att = F.softmax(att, dim=-1)
-        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble head outputs side by side
+        #att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        #att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float("-inf"))
+        #att = F.softmax(att, dim=-1)
+        #y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        #y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble head outputs side by side
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # Flash attention
+
         # output projection
         y = self.c_proj(y)
+        
         return y
 
 
