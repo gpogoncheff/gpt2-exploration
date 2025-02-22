@@ -37,8 +37,8 @@ class CasualSelfAttention(nn.Module):
         #att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float("-inf"))
         #att = F.softmax(att, dim=-1)
         #y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        #y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble head outputs side by side
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # Flash attention
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble head outputs side by side
 
         # output projection
         y = self.c_proj(y)
