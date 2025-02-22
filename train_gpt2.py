@@ -214,8 +214,11 @@ if __name__ == "__main__":
     model = GPT(GPTConfig()) # randomly initialized model
     #model = GPT.from_pretrained("gpt2")
     model.to(device)
+    model = torch.compile(model)
 
-    train_loader = TinyShakeSpeareDataLoader(B=4, T=32)
+    train_loader = TinyShakeSpeareDataLoader(B=8, T=1024)
+
+    torch.set_float32_matmul_precision("high")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
     for i in range(50):
@@ -223,7 +226,8 @@ if __name__ == "__main__":
         x = x.to(device)
         y = y.to(device)
         optimizer.zero_grad()
-        logits, loss = model(x, y)
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            logits, loss = model(x, y)
         loss.backward()
         optimizer.step()
         print(f"step {i}, loss: {loss.item()}")
